@@ -2,34 +2,43 @@
 #define MAX_DIST 200.
 #define SURF_DIST .001
 #define TAU 6.283185
+#define GLOBALSCALE .4
 
-const float bandHeight = .5;
+const float bandHeight = .02;
 const float doubleBH = bandHeight * 2.;
 const float squareBH = bandHeight * bandHeight;
 
-const float pinSpacing = 5.;
-const float pinMinHeight = 0.;
-const float pinMaxHeight = .12;
+const float pinSpacing = 2.;
+const float pinHeight = 3.;
 const float tolerance = .01;
+const float pinBottomR = .2;
+const float pinTopR = .1;
 
-const float brickL = .2;
-const float brickW = .1;
+const float brickL = 2.;
+const float brickW = 1.;
+const float brickH = 2.;
+
+const vec3 pinAStart = vec3(-.5*pinSpacing,-.5*brickL,0);
+const vec3 pinAEnd = vec3(-.5*pinSpacing,pinHeight-.5*brickL,0);
+const vec3 pinBStart = vec3(.5*pinSpacing,-.5*brickL,0);
+const vec3 pinBEnd = vec3(.5*pinSpacing,pinHeight-.5*brickL,0);
 
 const vec2 cylinderA = vec2(-.5*brickL,0);
 const vec2 cylinderB = vec2(.5*brickL,0);
 
-const vec4 planeMain = vec4(0.,1.,0.,0);
+const vec4 planeMain = vec4(0.,0.,1.,0);
 const vec4 planeSecA = vec4(-1.0,0.,0.,.5*brickL);
 const vec4 planeSecB = vec4(1.0,0.,0.,.5*brickL);
 
-const vec4 planeBottom = vec4(0.,0.,-1.,pinMinHeight);
-const vec4 planeTop = vec4(0.,0.,1.,pinMaxHeight);
+const vec4 planeBottom = vec4(0.,-1.,0.,.5*brickH);
+const vec4 planeTop = vec4(0.,1.,0,.5*brickH);
 
 const vec4 b_pln = vec4(.0, 0., 1., 10.);
 const vec4 b_pln_ref = vec4(.0, 0., 1., 9.0);
 
 const float backgroundD = 50.;
 const vec3 backgroundColor = vec3(0.07058823529411765, 0.0392156862745098, 0.5607843137254902);
+const vec3 objColor = vec3(0.6627450980392157, 0.06666666666666667, 0.00392156862745098);
 
 float intersectSDF(float distA, float distB) {
     return max(distA, distB);
@@ -64,7 +73,7 @@ float smin(float a, float b, float k) {
 }
 
 float sdBands(vec3 p) {
-    float val = mod(p.z, doubleBH);
+    float val = mod(p.y, doubleBH);
     val -= bandHeight;
     val = sqrt(squareBH - val * val);
     return -val;
@@ -80,30 +89,59 @@ float sdGyroid(vec3 p, float scale) {
 	return d;
 }
 
+float sdCappedCone(vec3 p, vec3 a, vec3 b, float ra, float rb)
+{
+    float rba  = rb-ra;
+    float baba = dot(b-a,b-a);
+    float papa = dot(p-a,p-a);
+    float paba = dot(p-a,b-a)/baba;
+    float x = sqrt( papa - paba*paba*baba );
+    float cax = max(0.0,x-((paba<0.5)?ra:rb));
+    float cay = abs(paba-0.5)-0.5;
+    float k = rba*rba + baba;
+    float f = clamp( (rba*(x-ra)+paba*baba)/k, 0.0, 1.0 );
+    float cbx = x-ra - f*rba;
+    float cby = paba - f;
+    float s = (cbx < 0.0 && cay < 0.0) ? -1.0 : 1.0;
+    return s*sqrt( min(cax*cax + cay*cay*baba,
+                       cbx*cbx + cby*cby*baba) );
+}
+
 float sdCookie(vec3 p) {
     float d_m=abs(sdPlane(p, planeMain))-brickW;
+    // float d_m=sdPlane(p, planeMain);
     float d_sa=sdPlane(p, planeSecA);
     float d_sb=sdPlane(p, planeSecB);
 
-    float d=d_m;
-    // float d=intersectSDF(intersectSDF(d_m, d_sa), d_sb);
+    // float d=d_m;
+    float d=intersectSDF(intersectSDF(d_m, d_sa), d_sb);
 
     float d_ca=sdCylinder(p, cylinderA, brickW);
     float d_cb=sdCylinder(p, cylinderB, brickW);
 
-    // d=unionSDF(unionSDF(d, d_ca), d_cb);
+    d=unionSDF(unionSDF(d, d_ca), d_cb);
+
+    float d_g=.3*sdGyroid(p, .3*sdGyroid(p, 20.));
+    d+=d_g;
+    d=differenceSDF(d, d);
 
     float d_t=sdPlane(p, planeTop);
     float d_b=sdPlane(p, planeBottom);
 
-    // d=intersectSDF(intersectSDF(d, d_t), d_b);
+    d=intersectSDF(intersectSDF(d, d_t), d_b);
 
     return d;
 }
 
 float GetDist(vec3 p) {
     // return sdCookie(p);
-    return sdCookie(p);
+    p*=GLOBALSCALE;
+    float d=sdCookie(p);
+    d=unionSDF(sdCappedCone(p, pinAStart, pinAEnd, pinBottomR, pinTopR), d);
+    d=unionSDF(sdCappedCone(p, pinBStart, pinBEnd, pinBottomR, pinTopR), d);
+
+    d+=sdBands(p);
+    return d*GLOBALSCALE;
 }
 
 float RayMarch(vec3 ro, vec3 rd) {
@@ -111,7 +149,7 @@ float RayMarch(vec3 ro, vec3 rd) {
 
     for (int i = 0; i < MAX_STEPS; i++) {
         vec3 p = ro + rd * d0;
-        float dS = GetDist(p) * .1;
+        float dS = GetDist(p);
         d0 += dS;
 
         if (d0 > MAX_DIST || dS < SURF_DIST) break;
@@ -168,13 +206,12 @@ vec3 R(vec2 uv, vec3 p, vec3 l, float z) {
 void mainImage( out vec4 fragColor, in vec2 fragCoord )
 {
     vec2 uv = (fragCoord - .5 * iResolution.xy) / iResolution.y;
-    vec2 m = iMouse.xy/ iResolution.xy;
+    vec2 m = 4.*iMouse.xy/ iResolution.xy;
 
-    // vec3 col = vec3(GetNormal(fragCoord) );
-
-    vec3 ro = vec3(10., 0, 0.);
-    ro.yz *= Rot(-m.z + .4);
-    ro.xz *= Rot(5.3 + m.x * TAU);
+    vec3 ro = vec3(10., -5., 0.);
+    ro.yx *= Rot(-m.y*2.);
+    ro.xz *= Rot(-m.x*2.);
+    // ro.xz *= Rot(5.3 + m.x * TAU);
 
     vec3 rd = R(uv, ro, vec3(0), .58);
 
